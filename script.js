@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const FEEDBACK_DELAY_MS = 1000; // Tiempo que se muestra el feedback (1 segundo)
     const MAX_ANSWER_LENGTH = 6;   // Máximos dígitos en la respuesta
     const TIMER_INTERVAL_MS = 1000; // Intervalo del timer (1 segundo)
+    const PROBLEM_HISTORY_SIZE = 4; // Cuántos problemas recientes recordar para evitar repetición
 
     // Tiempos por racha (en segundos)
     const TIME_PER_STREAK = [
@@ -39,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let num1, num2, correctAnswer;
     let consecutiveCorrect = 0;
     let highScores = new Array(NUM_LEVELS).fill(0);
+    let problemHistory = []; // Array para guardar los últimos problemas {n1, n2}
 
     // --- Timers y estado ---
     let questionTimerInterval = null;
@@ -64,9 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const streakLabel = document.getElementById('streak-label');
     const problemLabel = document.getElementById('problem-label');
     const feedbackLabel = document.getElementById('feedback-label');
-    const answerInput = document.getElementById('answer-input'); // Referencia clave
+    const answerInput = document.getElementById('answer-input');
     const timerBar = document.getElementById('timer-bar');
-    const keypad = document.getElementById('keypad'); // Referencia al contenedor del keypad
+    const keypad = document.getElementById('keypad');
 
     const levelModal = document.getElementById('level-modal');
     const modalLevelButtonsContainer = document.getElementById('modal-level-buttons');
@@ -100,16 +102,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 const parsedScores = JSON.parse(savedScores);
                 if (Array.isArray(parsedScores) && parsedScores.length === NUM_LEVELS) {
                     highScores = parsedScores;
-                    return; // Salir si se cargaron correctamente
+                    return;
                 }
-                console.warn("High scores data in localStorage is invalid. Resetting.");
+                console.warn("High scores data invalid. Resetting.");
                 localStorage.removeItem('multiplicationQuizHighScores');
             } catch (e) {
-                console.error("Error parsing high scores from localStorage:", e);
+                console.error("Error parsing high scores:", e);
                 localStorage.removeItem('multiplicationQuizHighScores');
             }
         }
-        // Si no se cargó nada o hubo error, asegurar que sea un array inicializado
         highScores = new Array(NUM_LEVELS).fill(0);
     }
 
@@ -126,22 +127,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         feedbackLabel.textContent = '';
         feedbackLabel.className = 'feedback-label';
-        answerInput.className = ''; // Quita clases de estilo (correcto/incorrecto)
+        answerInput.className = '';
     }
 
     // --- Funciones para Habilitar/Deshabilitar Input ---
-    // Controlan el estado 'disabled' (interactividad general) y estilos del keypad
     function disableInput() {
-        answerInput.disabled = true; // Deshabilita completamente (ignora readonly)
+        answerInput.disabled = true;
         keypad.style.opacity = '0.5';
         keypad.style.pointerEvents = 'none';
     }
 
     function enableInput() {
-        answerInput.disabled = false; // Habilita interactividad
+        answerInput.disabled = false;
         keypad.style.opacity = '1';
         keypad.style.pointerEvents = 'auto';
-        // El foco se manejará en generateNewProblem condicionalmente
     }
     // --- FIN Funciones Habilitar/Deshabilitar ---
 
@@ -157,26 +156,21 @@ document.addEventListener('DOMContentLoaded', () => {
     function pauseQuestionTimer() {
         timerWasPaused = true;
         stopQuestionTimer();
-        disableInput(); // Deshabilitar input al pausar por modal
-        console.log("Timer explicitly paused by user action (modal). Input disabled.");
+        disableInput();
+        console.log("Timer paused, input disabled.");
     }
 
     function resumeQuestionTimer() {
-        // Solo reanudar si estaba pausado por el modal y estamos en juego
         if (timerWasPaused && currentGameState === STATE_PLAYING) {
-            timerWasPaused = false; // Ya no está pausado
+            timerWasPaused = false;
             if (remainingTime > 0) {
-                 startQuestionTimer(false); // false = no resetear tiempo
-                 enableInput(); // Habilitar input al reanudar
-                 console.log("Timer explicitly resumed from user pause. Input enabled.");
-                 // Poner foco solo si no es táctil
-                 if (!isTouchDevice) {
-                    answerInput.focus();
-                 }
+                 startQuestionTimer(false);
+                 enableInput();
+                 console.log("Timer resumed, input enabled.");
+                 if (!isTouchDevice) answerInput.focus();
             } else {
-                 // Si el tiempo se acabó mientras estaba pausado, manejarlo ahora
-                 console.log("Timer not resumed (time was already up when resuming).");
-                 handleTimeUp(); // handleTimeUp se encargará de deshabilitar input
+                 console.log("Timer not resumed (time was up).");
+                 handleTimeUp();
             }
         }
     }
@@ -185,7 +179,6 @@ document.addEventListener('DOMContentLoaded', () => {
         remainingTime--;
         const percentage = Math.max(0, (remainingTime / currentQuestionTime) * 100);
         timerBar.style.width = `${percentage}%`;
-
         if (remainingTime <= 0) {
             stopQuestionTimer();
             handleTimeUp();
@@ -198,284 +191,231 @@ document.addEventListener('DOMContentLoaded', () => {
                  return TIME_PER_STREAK[i].time;
              }
          }
-         return TIME_PER_STREAK[0].time; // Default time
+         return TIME_PER_STREAK[0].time;
     }
 
-
     function startQuestionTimer(resetTime = true) {
-        stopQuestionTimer(); // Asegurar limpieza
-
+        stopQuestionTimer();
         if (resetTime) {
              currentQuestionTime = getTimeForCurrentStreak();
              remainingTime = currentQuestionTime;
         } else {
-             if (remainingTime < 0) remainingTime = 0; // Salvaguarda
+             if (remainingTime < 0) remainingTime = 0;
         }
-
         const initialPercentage = Math.max(0, (remainingTime / currentQuestionTime) * 100);
         timerBar.style.width = `${initialPercentage}%`;
-
         if (remainingTime > 0) {
              questionTimerInterval = setInterval(timerCountdown, TIMER_INTERVAL_MS);
         } else {
-             handleTimeUp(); // Si tiempo es 0, ir a time up
+             handleTimeUp();
         }
     }
-
 
     // --- Lógica del Juego ---
 
     function handleTimeUp() {
-        // Prevenir múltiples llamadas y ejecución si no estamos jugando
         if (currentGameState !== STATE_PLAYING || feedbackLabel.classList.contains('timeup')) return;
-
         console.log("Time's up!");
         stopQuestionTimer();
-        timerWasPaused = false; // Resetear estado de pausa
-        disableInput(); // Deshabilitar input al mostrar feedback de tiempo
+        timerWasPaused = false;
+        disableInput();
 
         feedbackLabel.textContent = `¡Tiempo! Era ${correctAnswer}`;
         feedbackLabel.className = 'feedback-label timeup';
-        answerInput.className = 'incorrect'; // Marcar input como incorrecto
+        answerInput.className = 'incorrect';
 
         consecutiveCorrect = 0;
         updateScoreLabels();
         timerBar.style.width = '0%';
 
-        // Programar la siguiente pregunta
         if (feedbackTimeout) clearTimeout(feedbackTimeout);
         feedbackTimeout = setTimeout(() => {
-            feedbackTimeout = null; // Limpiar referencia
+            feedbackTimeout = null;
             if (currentGameState === STATE_PLAYING) {
-                 generateNewProblem(); // generateNewProblem habilitará el input
+                 generateNewProblem();
             }
         }, FEEDBACK_DELAY_MS);
     }
 
-
+    // --- VERSIÓN CON HISTORIAL PARA EVITAR REPETICIONES ---
     function generateNewProblem() {
         if (currentGameState !== STATE_PLAYING) return;
 
-        const level = levelDetails[currentLevel];
-        num1 = randomInRange(level.range1[0], level.range1[1]);
-        num2 = randomInRange(level.range2[0], level.range2[1]);
+        let candidateNum1, candidateNum2;
+        let isRecent = false;
+        let attempts = 0; // Contador de seguridad
+
+        // Bucle para encontrar un problema no reciente
+        do {
+            const level = levelDetails[currentLevel];
+            candidateNum1 = randomInRange(level.range1[0], level.range1[1]);
+            candidateNum2 = randomInRange(level.range2[0], level.range2[1]);
+
+            // Comprobar si el par exacto está en el historial reciente
+            isRecent = problemHistory.some(problem =>
+                problem.n1 === candidateNum1 && problem.n2 === candidateNum2
+            );
+
+            attempts++;
+            // Salir si no es reciente o si hemos intentado demasiado
+            if (!isRecent || attempts > 50) {
+                if (isRecent && attempts > 50) {
+                     console.warn("No se pudo encontrar problema no reciente. Usando el último generado.");
+                }
+                break; // Salir del bucle
+            }
+
+        } while (true); // Se rompe con break
+
+        // Usar los números encontrados
+        num1 = candidateNum1;
+        num2 = candidateNum2;
         correctAnswer = num1 * num2;
 
+        // Actualizar el historial
+        problemHistory.unshift({ n1: num1, n2: num2 });
+        if (problemHistory.length > PROBLEM_HISTORY_SIZE) {
+            problemHistory.pop();
+        }
+        // console.log("Historial:", problemHistory.map(p => `${p.n1}x${p.n2}`)); // Debug
+
+        // Resto de la lógica (igual que antes)
         problemLabel.textContent = `${num1} x ${num2} = ?`;
-        answerInput.value = "";   // Limpiar campo visible para nueva respuesta
-        resetFeedbackAndStyle();  // Limpiar feedback visual anterior
-
-        // Habilitar input para la nueva pregunta
+        answerInput.value = "";
+        resetFeedbackAndStyle();
         enableInput();
-
-        // Poner foco solo si NO es táctil
         if (!isTouchDevice) {
             answerInput.focus();
         }
-
-        // Iniciar timer solo si no está pausado por modal
         if (!timerWasPaused) {
              startQuestionTimer(true);
         } else {
-             // Actualizar barra visualmente si está pausado
              const percentage = Math.max(0, (remainingTime / currentQuestionTime) * 100);
              timerBar.style.width = `${percentage}%`;
-             // console.log("generateNewProblem: Timer remains paused. Input enabled.");
         }
         updateScoreLabels();
     }
+    // --- FIN VERSIÓN CON HISTORIAL ---
 
     function checkAnswer() {
-        // Obtener respuesta directamente del input field
         const userAnswerString = answerInput.value.trim();
-
-        // Validaciones y guardias
-        // No procesar si hay feedback mostrándose o si el tiempo ya se agotó
-        if (feedbackTimeout || remainingTime <= 0) {
-            return;
-        }
+        if (feedbackTimeout || remainingTime <= 0) return;
 
         stopQuestionTimer();
-        timerWasPaused = false; // Una respuesta normal limpia el estado de pausa
-        disableInput(); // Deshabilitar input mientras se muestra feedback
+        timerWasPaused = false;
+        disableInput();
 
-        // Validar si la entrada está vacía
         if (userAnswerString === "") {
-            feedbackLabel.textContent = "¡Ingrese respuesta!";
-            feedbackLabel.className = 'feedback-label info';
-            startQuestionTimer(false); // Reanudar timer con tiempo restante
-            enableInput(); // Habilitar input de nuevo
-            // Poner foco solo si no es táctil
-            if (!isTouchDevice) {
-                 answerInput.focus();
-            }
-            return;
+             feedbackLabel.textContent = "¡Ingrese respuesta!";
+             feedbackLabel.className = 'feedback-label info';
+             startQuestionTimer(false);
+             enableInput();
+             if (!isTouchDevice) answerInput.focus();
+             return;
         }
-
         const userAnswer = parseInt(userAnswerString, 10);
-
-        // Validar si es un número válido después de parseInt
-         if (isNaN(userAnswer)) {
+        if (isNaN(userAnswer)) {
              feedbackLabel.textContent = "¡Ingrese solo números!";
              feedbackLabel.className = 'feedback-label info';
-             startQuestionTimer(false); // Reanudar timer con tiempo restante
-             enableInput(); // Habilitar input de nuevo
-             answerInput.value = ''; // Limpiar input inválido
-             // Poner foco solo si no es táctil
-             if (!isTouchDevice) {
-                 answerInput.focus();
-             }
+             startQuestionTimer(false);
+             enableInput();
+             answerInput.value = '';
+             if (!isTouchDevice) answerInput.focus();
              return;
          }
 
-        // Comparar respuesta
         let isCorrect = userAnswer === correctAnswer;
-
         if (isCorrect) {
-            feedbackLabel.textContent = "¡Correcto!";
-            feedbackLabel.className = 'feedback-label correct';
-            answerInput.className = 'correct'; // Marcar input como correcto
-            consecutiveCorrect++;
-            // Comprobar y guardar récord
-            if (consecutiveCorrect > highScores[currentLevel]) {
-                highScores[currentLevel] = consecutiveCorrect;
-                saveLevelHighScore(currentLevel);
-            }
+             feedbackLabel.textContent = "¡Correcto!";
+             feedbackLabel.className = 'feedback-label correct';
+             answerInput.className = 'correct';
+             consecutiveCorrect++;
+             if (consecutiveCorrect > highScores[currentLevel]) {
+                 highScores[currentLevel] = consecutiveCorrect;
+                 saveLevelHighScore(currentLevel);
+             }
         } else {
-            feedbackLabel.textContent = `Incorrecto. Era ${correctAnswer}`;
-            feedbackLabel.className = 'feedback-label incorrect';
-            answerInput.className = 'incorrect'; // Marcar input como incorrecto
-            consecutiveCorrect = 0;
+             feedbackLabel.textContent = `Incorrecto. Era ${correctAnswer}`;
+             feedbackLabel.className = 'feedback-label incorrect';
+             answerInput.className = 'incorrect';
+             consecutiveCorrect = 0;
         }
 
         updateScoreLabels();
-        // No limpiar answerInput.value aquí, el usuario ve lo que puso.
 
-        // Programar siguiente pregunta
         if (feedbackTimeout) clearTimeout(feedbackTimeout);
         feedbackTimeout = setTimeout(() => {
-            feedbackTimeout = null; // Limpiar referencia
+            feedbackTimeout = null;
             if (currentGameState === STATE_PLAYING) {
-                generateNewProblem(); // generateNewProblem habilitará el input
+                generateNewProblem();
             }
         }, FEEDBACK_DELAY_MS);
     }
 
-
     // --- Manejadores de Eventos ---
 
-    // Event Delegation para el Keypad Virtual
     keypad.addEventListener('click', (e) => {
-        // Solo procesar si el target es un botón y el input no está deshabilitado
         if (e.target.tagName !== 'BUTTON' || answerInput.disabled) return;
-
         const key = e.target.dataset.key;
-
-        // Limpiar feedback visual si se tocan números o borrar
-        if (key !== 'OK') {
-            resetFeedbackAndStyle();
-        }
-
-        // Modificar el valor del input directamente
-        if (key >= '0' && key <= '9') {
-            if (answerInput.value.length < MAX_ANSWER_LENGTH) {
-                answerInput.value += key;
-            }
-        } else if (key === 'BKSP') {
-            answerInput.value = answerInput.value.slice(0, -1);
-        } else if (key === 'OK') {
-            checkAnswer();
-        }
-        // No es necesario foco aquí, ya que la interacción es con el keypad virtual
+        if (key !== 'OK') { resetFeedbackAndStyle(); }
+        if (key >= '0' && key <= '9') { if (answerInput.value.length < MAX_ANSWER_LENGTH) answerInput.value += key; }
+        else if (key === 'BKSP') { answerInput.value = answerInput.value.slice(0, -1); }
+        else if (key === 'OK') { checkAnswer(); }
     });
 
-    // Listener para input directo en el campo
     answerInput.addEventListener('input', () => {
-        // Si es readonly o disabled, no permitir cambios (el navegador debería ayudar, pero esto es extra)
         if (answerInput.readOnly || answerInput.disabled) {
-             if(answerInput.readOnly && answerInput.value.length > 0) { // Evitar que se escriba si es readonly
-                 // Intenta revertir el cambio (puede ser imperfecto)
-                 answerInput.value = answerInput.value.slice(0, -1);
+             if(answerInput.readOnly && answerInput.value.length > 0) {
+                 answerInput.value = answerInput.value.slice(0,-1);
              }
              return;
         }
-
-        // Limpiar feedback si el usuario empieza a escribir/corregir
         resetFeedbackAndStyle();
-
-        // Limitar longitud
         if (answerInput.value.length > MAX_ANSWER_LENGTH) {
             answerInput.value = answerInput.value.slice(0, MAX_ANSWER_LENGTH);
         }
     });
 
-    // Listener para la tecla Enter en el campo
     answerInput.addEventListener('keydown', (event) => {
-         // Ignorar si está deshabilitado, es readonly, o no estamos jugando
          if (answerInput.disabled || answerInput.readOnly || currentGameState !== STATE_PLAYING) return;
-
         if (event.key === 'Enter') {
-            event.preventDefault(); // Prevenir comportamiento por defecto
-            checkAnswer(); // Ejecutar la misma lógica que el botón OK
+            event.preventDefault();
+            checkAnswer();
         }
     });
 
-
-    // Listeners para botones de control (Startup, Opciones, Modal)
-    startButton.addEventListener('click', () => {
-        currentGameState = STATE_LEVEL_SELECT;
-        populateLevelButtons(levelButtonsContainer, handleInitialLevelSelect);
-        showScreen(levelSelectScreen);
-    });
-
-    optionsButton.addEventListener('click', () => {
-         if (currentGameState !== STATE_PLAYING) return;
-         pauseQuestionTimer(); // Pausa y deshabilita input
-         levelModal.style.display = 'block';
-    });
-
-    closeModalButton.addEventListener('click', () => {
-        levelModal.style.display = 'none';
-        resumeQuestionTimer(); // Reanuda y habilita input si procede
-    });
-
-    window.addEventListener('click', (event) => {
-        // Cerrar modal si se clica fuera
-        if (event.target == levelModal) {
-            levelModal.style.display = 'none';
-            resumeQuestionTimer(); // Reanuda y habilita input si procede
-        }
-    });
+    startButton.addEventListener('click', () => { currentGameState = STATE_LEVEL_SELECT; populateLevelButtons(levelButtonsContainer, handleInitialLevelSelect); showScreen(levelSelectScreen); });
+    optionsButton.addEventListener('click', () => { if (currentGameState !== STATE_PLAYING) return; pauseQuestionTimer(); levelModal.style.display = 'block'; });
+    closeModalButton.addEventListener('click', () => { levelModal.style.display = 'none'; resumeQuestionTimer(); });
+    window.addEventListener('click', (event) => { if (event.target == levelModal) { levelModal.style.display = 'none'; resumeQuestionTimer(); } });
 
     // --- Funciones de Configuración de UI ---
 
     function handleInitialLevelSelect(levelIndex) {
-        currentLevel = levelIndex;
-        currentGameState = STATE_PLAYING;
-        consecutiveCorrect = 0;
-        timerWasPaused = false;
-        // Asegurarse que los récords estén cargados
-        if (!highScores || highScores.length !== NUM_LEVELS) loadHighScores();
-        populateLevelButtons(modalLevelButtonsContainer, handleModalLevelSelect); // Pre-llenar modal
-        showScreen(gameScreen);
-        generateNewProblem(); // Iniciar juego (habilita input y foco condicional)
+         currentLevel = levelIndex;
+         currentGameState = STATE_PLAYING;
+         consecutiveCorrect = 0;
+         timerWasPaused = false;
+         problemHistory = []; // Limpiar historial al empezar nuevo juego/nivel
+         if (!highScores || highScores.length !== NUM_LEVELS) loadHighScores();
+         populateLevelButtons(modalLevelButtonsContainer, handleModalLevelSelect);
+         showScreen(gameScreen);
+         generateNewProblem();
     }
 
     function handleModalLevelSelect(levelIndex) {
-         levelModal.style.display = 'none'; // Cerrar modal primero
-
+         levelModal.style.display = 'none';
          if (levelIndex !== currentLevel) {
              currentLevel = levelIndex;
              consecutiveCorrect = 0;
-             timerWasPaused = false; // Resetear pausa para nuevo nivel
-             generateNewProblem(); // Generar problema (habilita input y foco condicional)
+             timerWasPaused = false;
+             problemHistory = []; // Limpiar historial al cambiar de nivel
+             generateNewProblem();
          } else {
-             // Mismo nivel, solo reanudar
-             resumeQuestionTimer(); // Habilita input si procede
+             resumeQuestionTimer();
          }
     }
 
-    // Crear botones de nivel
     function populateLevelButtons(container, clickHandler) {
         container.innerHTML = '';
         levelDetails.forEach((level, index) => {
@@ -489,21 +429,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Inicialización ---
     function init() {
         console.log("Initializing Quiz...");
-        loadHighScores(); // Cargar récords primero
+        loadHighScores();
         currentGameState = STATE_STARTUP;
-
-        // Establecer readonly al inicio basado en detección táctil
         if (isTouchDevice) {
             answerInput.readOnly = true;
-            console.log("Input set to readonly for touch device.");
         } else {
             answerInput.readOnly = false;
-            console.log("Input readonly set to false for non-touch device.");
         }
-
-        // Inicialmente, deshabilitar input hasta que empiece el juego
-        disableInput();
-        showScreen(startupScreen); // Mostrar pantalla inicial
+        disableInput(); // Input deshabilitado al inicio
+        showScreen(startupScreen);
     }
 
     init(); // Ejecutar inicialización
